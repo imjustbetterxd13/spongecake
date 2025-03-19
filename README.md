@@ -341,87 +341,64 @@ def get_screenshot(self) -> str:
 ```python
 def action(self, input=None, user_input=None, safety_checks=None, pending_call=None) -> dict:
     """
-    Uses OpenAI's computer-use-preview model to control the container environment
-    and possibly handle user input or safety checks.
-
-    It is either:
+    Execute an action in the container environment. The action can be:
     - A brand-new user command
     - A continued conversation with user_input
     - A resumed computer_call (pending_call) that was previously halted for safety checks
 
-    Args:
-        input: A string command or a "stored response" object from the model
-        user_input: Optional text if the agent asked for user input
-        safety_checks: A list of safety check objects that were acknowledged
-        pending_call: A computer_call object we previously returned to the user (due to safety checks)
-                      that now needs to be executed and followed with a screenshot, etc.
-
-    Returns:
-        dict: with "result" (the agent's output), optional "needs_input" (list of messages for the user),
-              "safety_checks" (list of checks if any), and possibly "pending_call" if further action is needed.
     """
 ```
 
+**Purpose**  
+Allows the agent to perform actions in the container environment. It can either start a new command, continue a text-based conversation, or resume a previously halted computer call that needed safety checks.
+
+**How It Works**  
+1. **Normal text flow**:  
+   - If you provide a brand-new command (`input`) without `user_input`, the agent starts a fresh action.  
+   - If there’s existing conversation context (`input` as a stored response) and you provide `user_input`, the agent continues the dialogue.  
+
+2. **Resuming a pending call**:  
+   - If there’s a halted `pending_call` (from a previous safety check), the agent executes that call immediately instead of continuing text-based interaction.  
+
 **Arguments**:
 
-- **`input`** (str or response object, optional):  
-  - The initial command to run or a response object from a previous action.  
-  - If no user input was requested by the agent, this starts a brand-new command.  
-  - If you have a stored response from the agent, you can pass it here for continuation or to resume previous state.
+- **`input`**  
+  A string command or a stored response object from the agent. If no conversation is ongoing, pass a simple text command to start. If continuing a session, pass the previous agent response.  
 
-- **`user_input`** (str, optional):  
-  - If the agent has asked for additional user input, you provide it here.  
-  - This text is added to the conversation as a user message, continuing from the `input` response object.
+- **`user_input`**  
+  Text you enter when the agent asks a follow-up question. Only needed if the agent specifically requests more info.  
 
-- **`safety_checks`** (list, optional):  
-  - A list of safety check objects that were acknowledged by the user.  
-  - If a previous step paused for safety approval, pass the acknowledged checks here to continue.
+- **`safety_checks`**  
+  A list of safety check objects that you’ve acknowledged. If the agent previously flagged something for user approval, pass those checks back to proceed.
 
-- **`pending_call`** (object, optional):  
-  - A previously returned `computer_call` (from the agent) that was halted due to safety checks.  
-  - If provided, the function bypasses normal text-based input and proceeds to execute the pending call directly.
-
-**Behavior**:
-
-1. **Normal text-based flow**  
-   The function either:  
-   - Creates a new OpenAI response with the "computer-use-preview" model if **`user_input`** is **not** supplied.  
-   - Continues the conversation from the provided `input` (response object) if **`user_input`** **is** supplied.
-
-2. **Resuming a pending call**  
-   If **`pending_call`** is provided, the function executes that call immediately, using any acknowledged **`safety_checks`**.  
-   - After execution (and a screenshot step), it constructs a new response to check if more actions or messages are needed.
-
-3. **Looping for instructions**  
-   Internally, the function calls a `computer_use_loop` to process the agent’s step-by-step instructions, handle system events, and check for any further actions or messages.
+- **`pending_call`**  
+  A call object returned in a prior response, indicating a system action is paused until safety checks are acknowledged. Once acknowledged, pass this object here to resume.
 
 **Returns**:
 
-A **`dict`** with the following fields:
-
+A dictionary that may contain:
 ```json
 {
   "result": { ... },           // The agent's current output or state
-  "needs_input": [ ... ],      // (optional) A list of messages prompting the user for more input
-  "safety_checks": [ ... ],    // (optional) A list of new or ongoing safety checks
-  "pending_call": { ... }      // (optional) A call object if further execution is paused
+  "needs_input": [ ... ],      // (optional) Messages prompting the user for more input
+  "safety_checks": [ ... ],    // (optional) Safety checks that must be acknowledged
+  "pending_call": { ... }      // (optional) An action waiting for safety check confirmation
 }
 ```
 
 - **`result`**  
-  Always present. The final or in-progress state/output from the agent.  
+  The most recent output or actions from the agent.  
 
 - **`needs_input`**  
-  If present, the agent is requesting more text input from the user to proceed.  
+  If present, the agent is prompting you for more information (a text message).  
 
 - **`safety_checks`**  
-  A list of safety checks (if any) that must be acknowledged by the user before the agent can continue.  
+  If present, you must confirm these checks to continue.  
 
 - **`pending_call`**  
-  If present, the agent needs this call to be executed after the user confirms any safety checks.  
-  Once confirmed, call `action(..., pending_call=returned_pending_call, safety_checks=...)` to execute.  
+  If present, pass this object back into `action` along with any acknowledged checks to finalize the pending action.  
 
-Use these returned values to decide if you must prompt the user for more text, acknowledge safety checks, or execute a pending call.
+Use this function whenever you want the agent to do something in the desktop environment or continue an ongoing conversation. If the response indicates that user input or safety checks are required, provide them and call `action` again.
 
 ---
 
