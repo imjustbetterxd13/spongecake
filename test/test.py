@@ -12,12 +12,12 @@ def main():
 
     # Example usage
     print('What would you like your agent to do? Below are some examples or write your own:')
-    print('> Go to Linkedin.com')
-    print('> Go to Reddit.com')
-    print('> Go to facebook.com')
+    print('> Find me flights from San Francisco to Tokyo')
+    print('> Fill out the form at https://bit.ly/3RiWH76, CBP\'s website')
+    print('> Go to Youtube.com and search for a video titled "Python Tutorial"')
     user_prompt = input("").strip()
     try:
-        result = desktop.handle_action(user_prompt)
+        result = desktop.handle_action(user_prompt) # handle_action() is a wrapper function that calls action() and handles user input and safety checks
         if result:
             print("Result:", result)
     except Exception as e:
