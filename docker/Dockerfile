@@ -33,6 +33,9 @@ RUN echo 'pref("ui.caretBlinkTime", 0);' > /usr/lib/firefox-esr/defaults/pref/lo
 # Install/upgrade pip
 RUN pip3 install --upgrade pip
 
+USER root
+RUN echo 'pref("ui.caretBlinkTime", 0);' > /usr/lib/firefox-esr/defaults/pref/local-settings.js
+
 # Create non-root user and set that as the working directory
 RUN useradd -ms /bin/bash myuser     && echo "myuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER myuser

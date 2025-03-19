@@ -334,37 +334,45 @@ def get_screenshot(self) -> str:
 
 ## OpenAI Agent Integration
 
-### **`action(input, user_input=None)`**
+### **`action(input, user_input=None, safety_checks=None)`**
 
 ```python
-def action(self, input, user_input=None) -> dict:
+def action(self, input, user_input=None, safety_checks=None) -> dict:
     """
-    Uses OpenAI computer use to control the container environment
+    Uses OpenAI's computer-use-preview model to control the container environment
+    and possibly handle user input or safety checks.
     """
 ```
 
 **Arguments**:
-- **input**: The initial command or a stored response from the model.
-- **user_input** *(str, optional)*: If the agent has asked for additional input from a user.
+- **`input`**:  
+  The initial command (string) for the agent to run, or a "stored response" object from a previous call.  
+- **`user_input`** (string, optional):  
+  If the agent has requested additional information from the user, you provide that input here.  
+- **`safety_checks`** (list, optional):  
+  An optional list of safety check objects that have been acknowledged by the user and should be passed back to the agent.
 
 **Behavior**:
-1. If no `user_input`, it creates a new OpenAI response with the "computer-use-preview" model.
-2. If `user_input` is provided, it uses that input to continue a conversation.
-3. Computer use agent performs actions in the environment
-4. Returns final or updated `response`, plus any needed user input messages.
+
+1. If **`user_input`** is **not** provided, it creates a new OpenAI response with the "computer-use-preview" model using **`input`**.  
+2. If **`user_input`** **is** provided, the function continues the conversation from the previously returned response, optionally including **`safety_checks`** if needed.  
+3. The "computer use" agent performs actions in the environment
+4. Returns final or updated response, plus any needed user input messages and safety that need acknowledgement.
 
 **Returns**:
-A dictionary with:
+A dictionary with the following fields:
+
 ```json
 {
-  "result": response,
-  "needs_input": messages_if_any
+  "result": { ... },         // The final or in-progress response object
+  "needs_input": [ ... ],    // (optional) A list of messages if the agent requests user input
+  "safety_checks": true|false // Boolean indicating whether new safety checks are pending
 }
 ```
 
-Where `needs_input` is a list of messages the user must answer.
-
----
+- **`result`**: Always present. Contains the agent’s most recent output/state.  
+- **`needs_input`**: Present only if the agent needs user input to continue.  
+- **`safety_checks`**: A boolean (`true`/`false`) indicating whether there are pending safety checks in `result.pending_safety_checks`. If `true`, the caller will need to handle acknowledging these checks. Pass the acknowledged checks back to continue
 
 
 

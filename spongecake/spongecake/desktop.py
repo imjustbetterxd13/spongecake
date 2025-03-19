@@ -144,7 +144,7 @@ class Desktop:
         Move the mouse to (x, y) and click the specified button.
         click_type can be 'left', 'middle', or 'right'.
         """
-        click_type_map = {"left": 1, "middle": 2, "right": 3}
+        click_type_map = {"left": 1, "middle": 2, "wheel": 2, "right": 3}
         t = click_type_map.get(click_type.lower(), 1)
 
         print(f"Action: click at ({x}, {y}) with button '{click_type}' -> mapped to {t}")
@@ -168,16 +168,16 @@ class Desktop:
         # Vertical scroll (button 4 = up, button 5 = down)
         if scroll_y != 0:
             button = 4 if scroll_y < 0 else 5
-            clicks = abs(scroll_y)
-            for _ in range(5):
+            clicks = int(abs(scroll_y)/100)
+            for _ in range(clicks):
                 scroll_cmd = f"export DISPLAY={self.display} && xdotool click {button}"
                 self.exec(scroll_cmd)
 
         # Horizontal scroll (button 6 = left, button 7 = right)
         if scroll_x != 0:
             button = 6 if scroll_x < 0 else 7
-            clicks = abs(scroll_x)
-            for _ in range(5):
+            clicks = int(abs(scroll_x)/100)
+            for _ in range(clicks):
                 scroll_cmd = f"export DISPLAY={self.display} && xdotool click {button}"
                 self.exec(scroll_cmd)
 
@@ -286,52 +286,22 @@ class Desktop:
             
                 case "click":
                     x, y = int(action.x), int(action.y)
-                    button_map = {"left": 1, "middle": 2, "right": 3}
-                    b = button_map.get(action.button, 1)
-                    print(f"Action: click at ({x}, {y}) with button '{action.button}'")
-                    self.exec(f"export DISPLAY={self.display} && xdotool mousemove {x} {y} click {b}")
+                    self.click(x,y,action.button)
 
                 case "scroll":
                     x, y = int(action.x), int(action.y)
                     scroll_x, scroll_y = int(action.scroll_x), int(action.scroll_y)
-                    self.scroll(x, y, scroll_x, scroll_y)
+                    self.scroll(x, y, scroll_x=scroll_x, scroll_y=scroll_y)
                 
                 case "keypress":
                     keys = action.keys
-                    ctrl_pressed = False
-                    shift_pressed = False
-                    for k in keys:
-                        print(f"Action: keypress '{k}'")
-                        if k == 'CTRL':
-                            print(f"  - holding down 'CTRL'")
-                            self.exec(f"export DISPLAY={self.display} && xdotool keydown 'ctrl'")
-                            ctrl_pressed = True
-                        elif k == 'SHIFT':
-                            print(f"  - holding down 'SHIFT'")
-                            self.exec(f"export DISPLAY={self.display} && xdotool keydown 'shift'")
-                            shift_pressed = True
-                        elif k.lower() == "enter":
-                            self.exec(f"export DISPLAY={self.display} && xdotool key 'Return'")
-                        elif k.lower() == "space":
-                            self.exec(f"export DISPLAY={self.display} && xdotool key 'space'")
-                        else:
-                            self.exec(f"export DISPLAY={self.display} && xdotool key '{k.lower()}'")
-                    if ctrl_pressed:
-                        print(f"  - releasing 'CTRL'")
-                        self.exec(f"export DISPLAY={self.display} && xdotool keyup 'ctrl'")
-                        ctrl_pressed = False
-                    if shift_pressed:
-                        print(f"  - releasing 'SHIFT'")
-                        self.exec(f"export DISPLAY={self.display} && xdotool keyup 'shift'")
-                        shift_pressed = False
+                    self.keypress(keys)
                 
                 case "type":
                     text = action.text
-                    print(f"Action: type text: {text}")
-                    self.exec(f"export DISPLAY={self.display} && xdotool type '{text}'")
+                    self.type_text(text)
                 
                 case "wait":
-                    print(f"Action: wait")
                     time.sleep(2)
 
                 case "screenshot":
@@ -349,138 +319,243 @@ class Desktop:
 
     def computer_use_loop(self, response):
         """
-        Run the loop that executes computer actions until no 'computer_call' is found.
-        If the agent asks for input, return the messages to get user input from the caller.
+        Run the loop that executes computer actions until no 'computer_call' is found,
+        handling pending safety checks BEFORE actually executing the call.
         
-        Args:
-            response: The OpenAI API response
-            
         Returns:
-            tuple: (response, messages) where messages is None if no input needed,
-                or a list of messages if user input is required
+            (response, messages, safety_checks, pending_call)
+            - response: the latest (or final) response object
+            - messages: a list of "message" items if user input is requested (or None)
+            - safety_checks: a list of pending safety checks if any (or None)
+            - pending_call: if there's exactly one computer_call that was paused
+                due to safety checks, return that here so the caller can handle it
+                after the user acknowledges the checks.
         """
+        # Identify all message items (the agent wants text input)
+        messages = [item for item in response.output if item.type == "message"]
+
+        # Identify any computer_call items
         computer_calls = [item for item in response.output if item.type == "computer_call"]
-        if not computer_calls:
-            # Check if there are interactive messages asking for user input.
-            messages = [item for item in response.output if item.type == "message"]
-            if messages:
-                return response, messages
-            else:
-                print("No actionable computer_call or interactive prompt found. Finishing loop.")
-                return response, None
 
-        # We expect at most one computer_call per response.
-        computer_call = computer_calls[0]
-        last_call_id = computer_call.call_id
-        action = computer_call.action
+        # For simplicity, assume the agent only issues ONE call at a time
+        computer_call = computer_calls[0] if computer_calls else None
 
-        # Execute the action.
-        self.handle_model_action(action)
-        time.sleep(1)  # Allow time for changes to take effect.
+        # Identify all safety checks across items
+        all_safety_checks = []
+        for item in response.output:
+            checks = getattr(item, "pending_safety_checks", None)
+            if checks:
+                all_safety_checks.extend(checks)
 
-        # Take a screenshot after the action.
+        # If there's a computer_call that also has safety checks,
+        # we must return immediately so the user can acknowledge them first.
+        # We'll do so by returning the "pending_call" plus the checks.
+        if computer_call and all_safety_checks:
+            return response, messages or None, all_safety_checks, computer_call
+
+        # If there's no computer_call at all, but we do have messages or checks
+        # we return them so the caller can handle user input or safety checks.
+        if not computer_call:
+            if messages or all_safety_checks:
+                return response, messages or None, all_safety_checks or None, None
+            # Otherwise, no calls, no messages, no checks => done
+            print("No actionable computer_call or interactive prompt found. Finishing loop.")
+            return response, None, None, None
+
+        # If we got here, that means there's a computer_call *without* any safety checks,
+        # so we can proceed to execute it right away.
+
+        # Execute the call
+        self.handle_model_action(computer_call.action)
+        time.sleep(1)  # small delay to allow environment changes
+
+        # Take a screenshot
         screenshot_base64 = self.get_screenshot()
         image_data = base64.b64decode(screenshot_base64)
         with open("output_image.png", "wb") as f:
             f.write(image_data)
         print("* Saved image data.")
 
-        # Prepare the input for the next request.
-        call_input = {
-            "call_id": last_call_id,
-            "type": "computer_call_output",
-            "output": {
-                "type": "input_image",
-                "image_url": f"data:image/png;base64,{screenshot_base64}"
-            }
-        }
-
-        # If the computer_call contains pending safety checks, add them to the request.
-        if hasattr(computer_call, "pending_safety_checks") and computer_call.pending_safety_checks:
-            call_input["acknowledged_safety_checks"] = computer_call.pending_safety_checks
-        # If computer_call is a dict instead, you might use:
-        # if "pending_safety_checks" in computer_call and computer_call["pending_safety_checks"]:
-        #     call_input["acknowledged_safety_checks"] = computer_call["pending_safety_checks"]
-
-        response = self.openai_client.responses.create(
+        # Now send that screenshot back as `computer_call_output`
+        new_response = self.openai_client.responses.create(
             model="computer-use-preview",
             previous_response_id=response.id,
-            tools=[{
-                "type": "computer_use_preview",
-                "display_width": 1024,
-                "display_height": 768,
-                "environment": "linux"
-            }],
-            input=[call_input],
-            truncation="auto"
-        )
-        
-        # Continue the loop with the new response
-        return self.computer_use_loop(response)
-
-    def action(self, input, user_input=None):
-        """
-        Execute an action and handle any required user input.
-        
-        Args:
-            input: The initial command or action to execute, or a stored response
-            user_input: Optional user input to continue a previous interaction
-            
-        Returns:
-            dict: Contains 'result' with the final response, and optionally 'needs_input'
-                  with messages if user input is required
-        """
-        # Wrap docker exec
-        container = self.docker_client.containers.get(self.container_name)
-
-        if not user_input:
-            # Initial action
-            response = self.openai_client.responses.create(
-                model="computer-use-preview",
-                tools=[{
+            tools=[
+                {
                     "type": "computer_use_preview",
                     "display_width": 1024,
                     "display_height": 768,
-                    "environment": "linux" # other possible values: "mac", "windows", "ubuntu"
-                }],
-                input=[
-                    {
-                        "role": "user",
-                        "content": input
+                    "environment": "linux"
+                }
+            ],
+            input=[
+                {
+                    "call_id": computer_call.call_id,
+                    "type": "computer_call_output",
+                    "output": {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{screenshot_base64}"
                     }
-                ],
-                reasoning={
-                    "generate_summary": "concise",
-                },
-                truncation="auto"
-            )
-        else:
-            # Continue with user input from previous response
-            response = self.openai_client.responses.create(
-                model="computer-use-preview",
-                previous_response_id=input.id,  # Access id directly from Response object
-                tools=[{
+                }
+            ],
+            truncation="auto"
+        )
+
+        # Recurse with the updated response
+        return self.computer_use_loop(new_response)
+
+
+    def action(self, input=None, user_input=None, safety_checks=None, pending_call=None):
+        """
+        Execute an action in the container environment. The action can be:
+        - A brand-new user command
+        - A continued conversation with user_input
+        - A resumed computer_call (pending_call) that was previously halted for safety checks
+
+        Args:
+            input: A string command or a "stored response" object from the model
+            user_input: Optional text if the agent asked for user input
+            safety_checks: A list of safety check objects that were acknowledged
+            pending_call: A computer_call object we previously returned to the user (due to safety checks)
+                        that now needs to be executed and followed with a screenshot, etc.
+
+        Returns:
+            dict: with "result", optional "needs_input", and "safety_checks" (list of checks if any).
+        """
+        # If the user is resuming a pending computer_call after acknowledging safety checks,
+        # let's do that logic directly, bypassing normal text-based input.
+        if pending_call:
+            # We directly run that call; note that we do NOT pass user_input to the model
+            # because we are continuing the same call with "acknowledged_safety_checks".
+            return self._execute_and_continue_call(input, pending_call, safety_checks)
+
+        # Otherwise, we do the normal "text-based" logic:
+        def build_input_dict(role, content, checks=None):
+            payload = {"role": role, "content": content}
+            if checks:
+                payload["safety_checks"] = checks
+            return payload
+
+        def create_response(new_input, previous_response_id=None):
+            params = {
+                "model": "computer-use-preview",
+                "tools": [{
                     "type": "computer_use_preview",
                     "display_width": 1024,
                     "display_height": 768,
                     "environment": "linux"
                 }],
-                input=[{  # Format user input as expected by the API
-                    "role": "user",
-                    "content": user_input
-                }],
-                truncation="auto"
-            )
+                "input": [new_input],
+                "truncation": "auto",
+            }
+            if previous_response_id is None:
+                params["reasoning"] = {"generate_summary": "concise"}
+            else:
+                params["previous_response_id"] = previous_response_id
+            return self.openai_client.responses.create(**params)
 
-        output, messages = self.computer_use_loop(response)
-        
-        if messages:
-            # Return messages that need user input
+        # Normal flow if we have no pending_call
+        if user_input is None:
+            # brand-new action
+            new_input = build_input_dict("user", input, safety_checks)
+            response = create_response(new_input)
+        else:
+            # continuing from prior response
+            new_input = build_input_dict("user", user_input, safety_checks)
+            # 'input' here is assumed to be a response object with an id
+            response = create_response(new_input, previous_response_id=input.id)
+
+        output, messages, checks, pending_call = self.computer_use_loop(response)
+
+        # If there is a pending call (with checks?), or if messages exist, we surface them
+        if pending_call and checks:
+            # Return so the user can see the checks and ack them in handle_action
             return {
                 "result": output,
-                "needs_input": messages
+                "needs_input": messages or [],
+                "safety_checks": checks,  # pass the entire check list
+                "pending_call": pending_call
             }
-        
+
+        if messages:
+            # The agent wants user text input
+            return {
+                "result": output,
+                "needs_input": messages,
+                "safety_checks": checks or []
+            }
+
+        # Otherwise, no user input is needed. Return final or in-progress with any checks
         return {
+            "result": output,
+            "safety_checks": checks or []
+        }
+
+
+    def _execute_and_continue_call(self, input, computer_call, safety_checks):
+        """
+        Helper for 'action': directly executes a 'computer_call' after user acknowledged
+        safety checks. Then performs the screenshot step, sending 'acknowledged_safety_checks'
+        in the computer_call_output.
+        """
+        # Actually execute the call
+        self.handle_model_action(computer_call.action)
+        time.sleep(1)
+
+        # Take a screenshot
+        screenshot_base64 = self.get_screenshot()
+        image_data = base64.b64decode(screenshot_base64)
+        with open("output_image.png", "wb") as f:
+            f.write(image_data)
+        print("* Saved image data.")
+
+        # Now, create a new response with an acknowledged_safety_checks field
+        # in the computer_call_output
+        new_response = self.openai_client.responses.create(
+            model="computer-use-preview",
+            previous_response_id=input.id,
+            tools=[
+                {
+                    "type": "computer_use_preview",
+                    "display_width": 1024,
+                    "display_height": 768,
+                    "environment": "linux"
+                }
+            ],
+            input=[
+                {
+                    "call_id": computer_call.call_id,
+                    "type": "computer_call_output",
+                    "acknowledged_safety_checks": [
+                        {
+                            "id": check.id,
+                            "code": check.code,
+                            "message": getattr(check, "message_str", "Safety check message")
+                        }
+                        for check in safety_checks
+                    ],
+                    "output": {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{screenshot_base64}"
+                    }
+                }
+            ],
+            truncation="auto"
+        )
+
+        # Then re-enter the loop with the new response to see if more calls or messages appear
+        output, messages, checks, pending_call = self.computer_use_loop(new_response)
+
+        result = {
             "result": output
         }
+        if pending_call and checks:
+            result["pending_call"] = pending_call
+            result["safety_checks"] = checks
+        elif messages:
+            result["needs_input"] = messages
+            result["safety_checks"] = checks or []
+        else:
+            result["safety_checks"] = checks or []
+
+        return result
