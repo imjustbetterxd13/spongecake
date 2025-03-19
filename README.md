@@ -334,7 +334,6 @@ def get_screenshot(self) -> str:
 
 ## OpenAI Agent Integration
 
-```markdown
 ### **`action(input=None, user_input=None, safety_checks=None, pending_call=None)`**
 
 ```python
@@ -380,8 +379,6 @@ def action(self, input=None, user_input=None, safety_checks=None, pending_call=N
   - A previously returned `computer_call` (from the agent) that was halted due to safety checks.  
   - If provided, the function bypasses normal text-based input and proceeds to execute the pending call directly.
 
----
-
 **Behavior**:
 
 1. **Normal text-based flow**  
@@ -395,8 +392,6 @@ def action(self, input=None, user_input=None, safety_checks=None, pending_call=N
 
 3. **Looping for instructions**  
    Internally, the function calls a `computer_use_loop` to process the agent’s step-by-step instructions, handle system events, and check for any further actions or messages.
-
----
 
 **Returns**:
 
@@ -426,6 +421,45 @@ A **`dict`** with the following fields:
 
 Use these returned values to decide if you must prompt the user for more text, acknowledge safety checks, or execute a pending call.
 
+---
+
+### **`handle_action(action_input, stored_response=None, user_input=None)`**
+
+```python
+def handle_action(self, action_input, stored_response=None, user_input=None):
+    """
+    Demo function to call and manage `action` loop and responses
+    
+    1) Call the desktop.action method to handle commands or continue interactions
+    2) Print out agent prompts and safety checks
+    3) If there's user input needed, prompt
+    4) If there's a pending computer call with safety checks, ask user for ack, then continue
+    5) Repeat until no further action is required
+    """
+```
+
+**Purpose**  
+Provides a simple, interactive loop for handling agent actions in the container environment. It repeatedly calls the `action` function, checks for agent prompts, requests user input when necessary, and manages safety checks or computer calls.
+
+**Arguments**:
+- **`action_input`** (str):  
+  Your initial command or prompt to send to the agent.
+- **`stored_response`** (object, optional):  
+  A previously stored agent response you can resume from, if available.
+- **`user_input`** (str, optional):  
+  Any immediate user input to continue a prior conversation.
+
+**How it works**:
+1. **Initial call**:  
+   Starts by calling `action` with the given `action_input` (or `stored_response`, if provided).
+2. **Event loop**:  
+   - Displays any messages the agent wants you to see (prompts or safety checks).  
+   - If the agent needs more user input (`needs_input`), it prompts you and re-calls `action`.  
+   - If there’s a pending computer call and safety checks to acknowledge, you can confirm them and proceed.  
+3. **Completion**:  
+   Repeats until no further input is required and no more calls are pending, returning the final result.
+
+Use this function in a console or interactive environment to easily step through the agent’s conversation flow.
 
 # Appendix
 
