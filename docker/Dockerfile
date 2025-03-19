@@ -26,6 +26,10 @@ RUN apt-get update && apt-get install -y \
 # Install firefox
 RUN add-apt-repository ppa:mozillateam/ppa  && apt-get update  && apt-get install -y --no-install-recommends firefox-esr  && update-alternatives --set x-www-browser /usr/bin/firefox-esr  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Disable caret blink in firefox
+USER root
+RUN echo 'pref("ui.caretBlinkTime", 0);' > /usr/lib/firefox-esr/defaults/pref/local-settings.js
+
 # Install/upgrade pip
 RUN pip3 install --upgrade pip
 

@@ -169,7 +169,7 @@ class Desktop:
         if scroll_y != 0:
             button = 4 if scroll_y < 0 else 5
             clicks = abs(scroll_y)
-            for _ in range(clicks):
+            for _ in range(5):
                 scroll_cmd = f"export DISPLAY={self.display} && xdotool click {button}"
                 self.exec(scroll_cmd)
 
@@ -177,7 +177,7 @@ class Desktop:
         if scroll_x != 0:
             button = 6 if scroll_x < 0 else 7
             clicks = abs(scroll_x)
-            for _ in range(clicks):
+            for _ in range(5):
                 scroll_cmd = f"export DISPLAY={self.display} && xdotool click {button}"
                 self.exec(scroll_cmd)
 
@@ -294,15 +294,7 @@ class Desktop:
                 case "scroll":
                     x, y = int(action.x), int(action.y)
                     scroll_x, scroll_y = int(action.scroll_x), int(action.scroll_y)
-                    print(f"Action: scroll at ({x}, {y}) with offsets (scroll_x={scroll_x}, scroll_y={scroll_y})")
-                    self.exec(f"export DISPLAY={self.display} && xdotool mousemove {x} {y}")
-                    
-                    # For vertical scrolling, use button 4 (scroll up) or button 5 (scroll down)
-                    if scroll_y != 0:
-                        button = 4 if scroll_y < 0 else 5
-                        clicks = abs(scroll_y)
-                        for _ in range(clicks):
-                            self.exec(f"export DISPLAY={self.display} && xdotool click {button}")
+                    self.scroll(x, y, scroll_x, scroll_y)
                 
                 case "keypress":
                     keys = action.keys
@@ -365,15 +357,13 @@ class Desktop:
             
         Returns:
             tuple: (response, messages) where messages is None if no input needed,
-                  or a list of messages if user input is required
+                or a list of messages if user input is required
         """
         computer_calls = [item for item in response.output if item.type == "computer_call"]
         if not computer_calls:
-            # No actionable computer_call found.
-            # Check if there are interactive messages asking for input.
+            # Check if there are interactive messages asking for user input.
             messages = [item for item in response.output if item.type == "message"]
             if messages:
-                # Return messages to caller for user input handling
                 return response, messages
             else:
                 print("No actionable computer_call or interactive prompt found. Finishing loop.")
@@ -391,33 +381,37 @@ class Desktop:
         # Take a screenshot after the action.
         screenshot_base64 = self.get_screenshot()
         image_data = base64.b64decode(screenshot_base64)
-
         with open("output_image.png", "wb") as f:
             f.write(image_data)
         print("* Saved image data.")
 
-        # Send the screenshot back as a computer_call_output.
+        # Prepare the input for the next request.
+        call_input = {
+            "call_id": last_call_id,
+            "type": "computer_call_output",
+            "output": {
+                "type": "input_image",
+                "image_url": f"data:image/png;base64,{screenshot_base64}"
+            }
+        }
+
+        # If the computer_call contains pending safety checks, add them to the request.
+        if hasattr(computer_call, "pending_safety_checks") and computer_call.pending_safety_checks:
+            call_input["acknowledged_safety_checks"] = computer_call.pending_safety_checks
+        # If computer_call is a dict instead, you might use:
+        # if "pending_safety_checks" in computer_call and computer_call["pending_safety_checks"]:
+        #     call_input["acknowledged_safety_checks"] = computer_call["pending_safety_checks"]
+
         response = self.openai_client.responses.create(
             model="computer-use-preview",
             previous_response_id=response.id,
-            tools=[
-                {
-                    "type": "computer_use_preview",
-                    "display_width": 1024,
-                    "display_height": 768,
-                    "environment": "linux"
-                }
-            ],
-            input=[
-                {
-                    "call_id": last_call_id,
-                    "type": "computer_call_output",
-                    "output": {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{screenshot_base64}"
-                    }
-                }
-            ],
+            tools=[{
+                "type": "computer_use_preview",
+                "display_width": 1024,
+                "display_height": 768,
+                "environment": "linux"
+            }],
+            input=[call_input],
             truncation="auto"
         )
         
