@@ -38,7 +38,7 @@ class Desktop:
       unavailable between the initial check and the actual container startup
     """
 
-    def __init__(self, name: str = "newdesktop", docker_image: str = "spongebox/spongecake:latest", vnc_port: int = 5900, api_port: int = 8000, marionette_port: int = 3838, socat_port: int = 2828, openai_api_key: str = None, create_agent: bool = True):
+    def __init__(self, name: str = "newdesktop", docker_image: str = "spongebox/spongecake:latest", vnc_port: int = 5900, api_port: int = None, marionette_port: int = 3838, socat_port: int = 2828, host: str = None, openai_api_key: str = None, create_agent: bool = True):
         """
         Initialize a new Desktop instance.
         
@@ -49,6 +49,7 @@ class Desktop:
             api_port: Starting local port for API (will auto-increment if in use during container startup)
             marionette_port: Starting local port for Marionette (will auto-increment if in use during container startup)
             socat_port: Starting local port for Socat (will auto-increment if in use during container startup)
+            host: Hostname or IP address to connect to the API (default: localhost)
             openai_api_key: OpenAI API key for agent functionality
             create_agent: Whether to create an agent instance automatically
         """
@@ -62,9 +63,24 @@ class Desktop:
         self.api_port = api_port
         self.marionette_port = marionette_port
         self.socat_port = socat_port
+        self.host = host
+        self.container_started = False
+        
+        # Display a warning if host is specified but api_port is using the default value
+        if self.host is not None and self.api_port is None:
+            logger.warning(
+                "⚠️ Defaulting to API port 8000. "
+                "When connecting to an existing container, you should explicitly set api_port "
+                "to match the actual port of the remote container."
+            )
+        if self.api_port is None:
+            self.api_port = 8000
 
-        # Create a Docker client from environment
-        self.docker_client = docker.from_env()
+        # API base URL will be set based on host and ports
+        self._update_api_base_url()
+
+        # Create a Docker client from environment if we're not using a remote host
+        self.docker_client = docker.from_env() if host is None else None
 
         # Ensure OpenAI API key is available to use
         if openai_api_key is None:
@@ -96,6 +112,21 @@ class Desktop:
             raise RuntimeError("No available ports found")
         return port
         
+    def _update_api_base_url(self):
+        """
+        Update the API base URL based on current host and port.
+        Should be called whenever api_port changes.
+        If host is None, API calls will not be attempted.
+        """
+        if self.host is not None:
+            self.api_base_url = f"http://{self.host}:{self.api_port}"
+            # For remote hosts, we assume the container is already running
+            self.container_started = True
+        else:
+            # For local containers, we'll use localhost as the host
+            self.api_base_url = f"http://localhost:{self.api_port}"
+            # For local containers, we'll set container_started to True when start() is called
+        
     def start(self):
         """
         Starts the container if it's not already running.
@@ -108,12 +139,18 @@ class Desktop:
         - 2828 for Marionette
         - 2829 for Socat
         """
+            
         # Hardcoded container ports
         CONTAINER_VNC_PORT = 5900
         CONTAINER_API_PORT = 8000
         CONTAINER_MARIONETTE_PORT = 2828
         CONTAINER_SOCAT_PORT = 2829
         
+        self.docker_client = docker.from_env()
+        if self.docker_client is None:
+            logger.warning("Docker client not available. Cannot start container.")
+            return
+
         try:
             # Check to see if the container already exists
             container = self.docker_client.containers.get(self.container_name)
@@ -126,6 +163,8 @@ class Desktop:
             else:
                 logger.info(f"Container '{self.container_name}' is already running.")
 
+            # Mark the container as started
+            self.container_started = True
         except NotFound:
             # The container does not exist yet. Create it and pull the image first.
             logger.info(f"⏰ Creating and starting a new container '{self.container_name}'...")
@@ -137,7 +176,7 @@ class Desktop:
                 logger.warning("Failed to pull image. Attempting to start container...")
 
             # Try running a new container from the (hopefully just-pulled) image
-            max_retries = 10  # Maximum number of retries for port conflicts
+            max_retries = 25  # Maximum number of retries for port conflicts
             retries = 0
             
             while retries < max_retries:
@@ -283,6 +322,12 @@ class Desktop:
             
             if retries >= max_retries:
                 raise RuntimeError(f"Failed to start container after {max_retries} attempts due to port conflicts")
+            
+            # Update API base URL with the final port
+            self._update_api_base_url()
+            
+            # Mark the container as started
+            self.container_started = True
 
             logger.info(f"🍰 spongecake container started: {container}    (VNC PORT: {self.vnc_port}; API PORT: {self.api_port}; Marionette PORT: {self.marionette_port}; Socat PORT: {self.socat_port})")
         # Give the container a brief moment to initialize its services
@@ -292,11 +337,21 @@ class Desktop:
     def stop(self):
         """
         Stops and removes the container.
+        If host is set, this method is a no-op as we assume the container is managed elsewhere.
         """
+            
         try:
+            self.docker_client = docker.from_env()
+
+            if self.docker_client is None:
+                logger.warning("Docker client not available. Cannot stop container.")
+                return
+                
             container = self.docker_client.containers.get(self.container_name)
             container.stop()
             container.remove()
+            # Mark the container as stopped
+            self.container_started = False
             logger.info(f"Container '{self.container_name}' stopped and removed.")
         except docker.errors.NotFound:
             logger.info(f"Container '{self.container_name}' not found.")
@@ -309,6 +364,14 @@ class Desktop:
     # RUN COMMANDS IN DESKTOP
     # ----------------------------------------------------------------
     def exec(self, command):
+        # Ensure the container is started
+        if not self.container_started:
+            raise RuntimeError("Container not started. Call start() before executing commands.")
+        
+        # Ensure we have a Docker client
+        if self.docker_client is None:
+            raise RuntimeError("Docker client not available. Cannot execute commands.")
+            
         # Wrap docker exec
         container = self.docker_client.containers.get(self.container_name)
         # Use /bin/sh -c to execute shell commands
@@ -320,6 +383,52 @@ class Desktop:
             "result": result.output.decode() if result.output else "",
             "returncode": result.exit_code
         }
+        
+    def _call_api_with_fallback(self, endpoint, method="post", json_data=None, fallback_cmd=None):
+        """
+        Call the API endpoint with fallback to exec if the API call fails.
+        If host is None, directly use exec without attempting API call.
+        
+        Args:
+            endpoint: API endpoint to call (e.g., '/action')
+            method: HTTP method to use (default: 'post')
+            json_data: JSON data to send with the request
+            fallback_cmd: Command to execute if the API call fails
+            
+        Returns:
+            API response or exec result
+        """
+        # If host is None, use exec directly
+        if self.host is None:
+            if fallback_cmd:
+                logger.debug(f"Host is None, using exec directly: {fallback_cmd}")
+                return self.exec(fallback_cmd)
+            else:
+                raise RuntimeError("No host specified for API call and no fallback command provided")
+        
+        # Otherwise try API call with fallback to exec if possible
+        url = f"{self.api_base_url}{endpoint}"
+        logger.debug(f"Calling API: {url} with data: {json_data}")
+        
+        try:
+            if method.lower() == "post":
+                response = requests.post(url, json=json_data, timeout=10)
+            elif method.lower() == "get":
+                response = requests.get(url, timeout=10)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+                
+            response.raise_for_status()  # Raise exception for HTTP errors
+            return response.json()
+            
+        except (requests.RequestException, ValueError) as e:
+            logger.warning(f"API call failed: {str(e)}")
+            # Only try fallback if we have a local container
+            if fallback_cmd and self.docker_client is not None and self.container_started:
+                logger.warning("Falling back to exec command")
+                return self.exec(fallback_cmd)
+            else:
+                raise RuntimeError(f"API call failed and fallback not available: {str(e)}")
 
     # ----------------------------------------------------------------
     # CLICK
@@ -329,12 +438,23 @@ class Desktop:
         Move the mouse to (x, y) and click the specified button.
         click_type can be 'left', 'middle', or 'right'.
         """
+        logger.info(f"Action: click at ({x}, {y}) with button '{click_type}'")
+        
+        # Prepare API request data
+        json_data = {"type": "click", "x": x, "y": y, "button": click_type}
+        
+        # Prepare fallback command
         click_type_map = {"left": 1, "middle": 2, "wheel": 2, "right": 3}
         t = click_type_map.get(click_type.lower(), 1)
-
-        logger.info(f"Action: click at ({x}, {y}) with button '{click_type}' -> mapped to {t}")
-        cmd = f"export DISPLAY={self.display} && xdotool mousemove {x} {y} click {t}"
-        self.exec(cmd)
+        fallback_cmd = f"export DISPLAY={self.display} && xdotool mousemove {x} {y} click {t}"
+        
+        # Call API with fallback
+        return self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
+        )
 
     # ----------------------------------------------------------------
     # SCROLL
@@ -346,25 +466,35 @@ class Desktop:
         Negative scroll_x -> scroll left, positive -> scroll right (button 6 or 7).
         """
         logger.info(f"Action: scroll at ({x}, {y}) with offsets (scroll_x={scroll_x}, scroll_y={scroll_y})")
-        # Move mouse to position
-        move_cmd = f"export DISPLAY={self.display} && xdotool mousemove {x} {y}"
-        self.exec(move_cmd)
-
+        
+        # Prepare API request data
+        json_data = {"type": "scroll", "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y}
+        
+        # Prepare fallback command
+        fallback_cmds = [f"export DISPLAY={self.display} && xdotool mousemove {x} {y}"]
+        
         # Vertical scroll (button 4 = up, button 5 = down)
         if scroll_y != 0:
             button = 4 if scroll_y < 0 else 5
-            clicks = int(abs(scroll_y)/100)
             for _ in range(3):
-                scroll_cmd = f"export DISPLAY={self.display} && xdotool click {button}"
-                self.exec(scroll_cmd)
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool click {button}")
 
         # Horizontal scroll (button 6 = left, button 7 = right)
         if scroll_x != 0:
             button = 6 if scroll_x < 0 else 7
-            clicks = int(abs(scroll_x)/100)
             for _ in range(3):
-                scroll_cmd = f"export DISPLAY={self.display} && xdotool click {button}"
-                self.exec(scroll_cmd)
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool click {button}")
+        
+        # Join fallback commands with semicolons
+        fallback_cmd = " && ".join(fallback_cmds) if fallback_cmds else None
+        
+        # Call API with fallback
+        return self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
+        )
 
     # ----------------------------------------------------------------
     # KEYPRESS
@@ -376,39 +506,55 @@ class Desktop:
         Example: keys=["CTRL","F"] -> Ctrl+F
         """
         logger.info(f"Action: keypress with keys: {keys}")
-
+        
+        # Prepare API request data
+        json_data = {"type": "keypress", "keys": keys}
+        
+        # Prepare fallback command
+        fallback_cmds = []
         ctrl_pressed = False
         shift_pressed = False
-
+        
         for k in keys:
             logger.info(f"  - key '{k}'")
-
-            # Check modifiers
+            
+            # Handle special modifiers
             if k.upper() == 'CTRL':
                 logger.info("    => holding down CTRL")
-                self.exec(f"export DISPLAY={self.display} && xdotool keydown ctrl")
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool keydown ctrl")
                 ctrl_pressed = True
             elif k.upper() == 'SHIFT':
                 logger.info("    => holding down SHIFT")
-                self.exec(f"export DISPLAY={self.display} && xdotool keydown shift")
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool keydown shift")
                 shift_pressed = True
             # Check special keys
             elif k.lower() == "enter":
-                self.exec(f"export DISPLAY={self.display} && xdotool key Return")
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool key Return")
             elif k.lower() == "space":
-                self.exec(f"export DISPLAY={self.display} && xdotool key space")
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool key space")
             else:
                 # For normal alphabetic or punctuation
                 lower_k = k.lower()  # xdotool keys are typically lowercase
-                self.exec(f"export DISPLAY={self.display} && xdotool key '{lower_k}'")
+                fallback_cmds.append(f"export DISPLAY={self.display} && xdotool key '{lower_k}'")
 
         # Release modifiers
         if ctrl_pressed:
             logger.info("    => releasing CTRL")
-            self.exec(f"export DISPLAY={self.display} && xdotool keyup ctrl")
+            fallback_cmds.append(f"export DISPLAY={self.display} && xdotool keyup ctrl")
         if shift_pressed:
             logger.info("    => releasing SHIFT")
-            self.exec(f"export DISPLAY={self.display} && xdotool keyup shift")
+            fallback_cmds.append(f"export DISPLAY={self.display} && xdotool keyup shift")
+            
+        # Join fallback commands with semicolons
+        fallback_cmd = " && ".join(fallback_cmds) if fallback_cmds else None
+        
+        # Call API with fallback
+        return self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
+        )
 
     # ----------------------------------------------------------------
     # TYPE
@@ -418,8 +564,20 @@ class Desktop:
         Type a string of text (like using a keyboard) at the current cursor location.
         """
         logger.info(f"Action: type text: {text}")
-        cmd = f"export DISPLAY={self.display} && xdotool type '{text}'"
-        self.exec(cmd)
+        
+        # Prepare API request data
+        json_data = {"type": "type", "text": text}
+        
+        # Prepare fallback command
+        fallback_cmd = f"export DISPLAY={self.display} && xdotool type '{text}'"
+        
+        # Call API with fallback
+        return self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
+        )
     
     # ----------------------------------------------------------------
     # TAKE SCREENSHOT
@@ -429,31 +587,30 @@ class Desktop:
         Takes a screenshot of the current desktop.
         Returns the base64-encoded PNG screenshot as a string.
         """
-        # The command:
-        # 1) Sets DISPLAY to :99 (as Xvfb is running on :99 in your Dockerfile)
-        # 2) Runs 'import -window root png:- | base64'
-        # 3) The -w 0 option on base64 ensures no line wrapping (optional)
+        logger.info("Action: take screenshot")
         
-        command = (
-            "export DISPLAY=:99 && "
-            "import -window root png:- | base64 -w 0"
+        # Prepare API request data
+        json_data = {"type": "screenshot"}
+        
+        # Prepare fallback command
+        fallback_cmd = f"export DISPLAY={self.display} && import -window root png:- | base64 -w 0"
+        
+        # Call API with fallback
+        response = self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
         )
-
-        # We run docker exec, passing the above shell command
-        # Note: we add 'bash -c' so we can use shell pipes
-        proc = subprocess.run(
-            ["docker", "exec", self.container_name, "bash", "-c", command],
-            capture_output=True,
-            text=True
-        )
-
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"Screenshot command failed:\nSTDERR: {proc.stderr}\n"
-            )
-
-        # proc.stdout is now our base64-encoded screenshot
-        return proc.stdout.strip()
+        
+        # Extract screenshot data from response
+        if isinstance(response, dict) and "screenshot" in response:
+            return response["screenshot"]
+        elif isinstance(response, dict) and "result" in response:
+            # If the response comes from the fallback command
+            return response["result"]
+        else:
+            return None
     
     # ----------------------------------------------------------------
     # GOTO URL
@@ -466,10 +623,44 @@ class Desktop:
             url: The URL to navigate to (e.g., "https://example.com")
         """
         logger.info(f"Action: goto URL: {url}")
-        # add `&` at the end to run Firefox in background and have `self.exec` return immediately
-        command = f"export DISPLAY={self.display} && firefox-esr -new-tab {url} &"
-        self.exec(command)
+        
+        # Prepare API request data
+        json_data = {"type": "goto", "url": url}
+        
+        # Prepare fallback command - add `&` at the end to run Firefox in background
+        fallback_cmd = f"export DISPLAY={self.display} && firefox-esr -new-tab {url} &"
+        
+        # Call API with fallback
+        return self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
+        )
 
+    # ----------------------------------------------------------------
+    # WAIT
+    # ----------------------------------------------------------------
+    def wait(self, seconds: float = 2.0):
+        """
+        Wait for the specified number of seconds.
+        """
+        logger.info(f"Action: wait for {seconds} seconds")
+        
+        # Prepare API request data
+        json_data = {"type": "wait", "seconds": seconds}
+        
+        # Prepare fallback command
+        fallback_cmd = f"sleep {seconds}"
+        
+        # Call API with fallback
+        return self._call_api_with_fallback(
+            endpoint="/action",
+            method="post",
+            json_data=json_data,
+            fallback_cmd=fallback_cmd
+        )
+    
     # -------------------------
     # Agent Integration
     # -------------------------
