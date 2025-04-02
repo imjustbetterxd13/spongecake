@@ -9,13 +9,13 @@
   </picture>
 </div>
 
-<h1 align="center">Open source SDK to launch OpenAI computer use agents</h1>
+<h1 align="center">Open Source Operator for Computer Use</h1>
 <div style="text-align: center;">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./static/linkedin-example.gif" />
+    <source media="(prefers-color-scheme: dark)" srcset="./static/spongecake-demo.gif" />
     <img 
       alt="[coming soon] Shows a demo of spongecake in action" 
-      src="./static/linkedin-example.gif" 
+      src="./static/spongecake-demo.gif" 
       style="width: 100%; max-width: 700px;"
     />
   </picture>
@@ -32,7 +32,7 @@
 
 ## What is spongecake?
 
-🍰 **spongecake** is the easiest way to launch OpenAI-powered “computer use” agents that scrape, fill out forms, and interact with websites or local apps. It simplifies:
+🍰 **spongecake** is the easiest way to create your own OpenAI Operator that can use computers. These agents can scrape, fill out forms, and interact with websites or local apps. It simplifies:
 - **Spinning up** a Docker container with a virtual desktop (including Xfce, VNC, etc.).
 - **Controlling** that virtual desktop programmatically using an SDK (click, scroll, keyboard actions).
 - **Integrating** with OpenAI to drive an agent that can interact with a real Linux-based GUI.
@@ -51,11 +51,20 @@
    chmod +x setup.sh  # May be required on Unix/macOS
    ./setup.sh
    ```
-3. **Run the example script**:
-   ```bash
-   python example.py
-   ```
-   Feel free to edit `example.py` to try out your own commands.  
+3. **Run the backend and frontend**:
+
+    In the spongecake directory, run:
+    ```bash
+    cd spongecake-ui
+    cd frontend
+    npm run dev
+    ```
+    In a new terminal, run:
+    ```bash
+    cd spongecake-ui
+    cd backend
+    python server.py
+    ```
 > **Note:** This deploys a Docker container in your local Docker environment. If the spongecake default image isn't available, it will pull the image from Docker Hub.
 ---
 
