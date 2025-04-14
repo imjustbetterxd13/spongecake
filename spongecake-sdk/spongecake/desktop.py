@@ -14,6 +14,9 @@ import logging
 import threading
 from openai import OpenAI
 from .constants import AgentStatus
+from .trace import Tracer, TraceConfig
+from typing import Optional
+import uuid
 import platform
 from io import BytesIO
 
@@ -68,7 +71,7 @@ class Desktop:
       unavailable between the initial check and the actual container startup
     """
 
-    def __init__(self, name: str = "newdesktop", docker_image: str = "spongebox/spongecake:latest", vnc_port: int = 5900, api_port: int = None, marionette_port: int = 3838, socat_port: int = 2828, websocket_port: int = 6080, host: str = None, openai_api_key: str = None, create_agent: bool = True):
+    def __init__(self, name: str = "newdesktop", docker_image: str = "spongebox/spongecake:latest", vnc_port: int = 5900, api_port: int = None, marionette_port: int = 3838, socat_port: int = 2828, websocket_port: int = 6080, host: str = None, openai_api_key: str = None, create_agent: bool = True, trace_config: Optional[TraceConfig] = None):
         """
         Initialize a new Desktop instance.
         
@@ -96,6 +99,7 @@ class Desktop:
         self.websocket_port = websocket_port
         self.host = host
         self.container_started = False
+        self.tracer = Tracer(trace_config)
 
         # Initialize environment
         self.scale_factor = 1 # Default scale factor
@@ -424,6 +428,7 @@ class Desktop:
         # If running in container
         else:
             logger.info(f"Action: click at ({x}, {y}) with button '{click_type}'")
+            self.tracer.add_entry("click", x=x, y=y, button=click_type)
             # Prepare API request data
             json_data = {"type": "click", "x": x, "y": y, "button": click_type}
             
@@ -468,6 +473,7 @@ class Desktop:
         # If running in container
         else:
             logger.info(f"Action: scroll at ({x}, {y}) with offsets (scroll_x={scroll_x}, scroll_y={scroll_y})")
+            self.tracer.add_entry("scroll", x=x, y=y, scroll_x=scroll_x, scroll_y=scroll_y)
             # Prepare API request data
             json_data = {"type": "scroll", "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y}
             
@@ -544,6 +550,7 @@ class Desktop:
             ctrl_pressed = False
             shift_pressed = False
             
+            self.tracer.add_entry("keypress", keys=keys)
             for k in keys:
                 logger.info(f"  - key '{k}'")
                 
@@ -593,6 +600,7 @@ class Desktop:
         Type a string of text (like using a keyboard) at the current cursor location.
         """
         logger.info(f"Action: type text: {text}")
+        self.tracer.add_entry("type", text=text)
 
         # Check if running on macOS
         if self.environment == "mac":
@@ -657,13 +665,15 @@ class Desktop:
             )
         
         # Extract screenshot data from response
+        screenshot_bytes = None
         if isinstance(response, dict) and "screenshot" in response:
-            return response["screenshot"]
+            screenshot_bytes = response["screenshot"]
         elif isinstance(response, dict) and "result" in response:
             # If the response comes from the fallback command
-            return response["result"]
-        else:
-            return None
+            screenshot_bytes = response["result"]
+        if self.tracer.config.trace_screenshots:
+            self.tracer.add_entry("screenshot", screenshot=f"data:image/png;base64,{screenshot_bytes}")
+        return screenshot_bytes
     
     # ----------------------------------------------------------------
     # GOTO URL
@@ -676,6 +686,7 @@ class Desktop:
             url: The URL to navigate to (e.g., "https://example.com")
         """
         logger.info(f"Action: goto URL: {url}")
+        self.tracer.add_entry("goto", url=url)
 
         # If running on macOS (note: we need something specifically for Windows since we're using subprocess)
         if self.environment == "mac":
@@ -707,6 +718,7 @@ class Desktop:
         Wait for the specified number of seconds.
         """
         logger.info(f"Action: wait for {seconds} seconds")
+        self.tracer.add_entry("wait", seconds=seconds)
 
         # Check if running on macOS
         if self.environment == "mac":
@@ -866,42 +878,50 @@ class Desktop:
             - status is an AgentStatus enum value indicating the result
             - data contains relevant information based on the status
         """
-        # Look for old-style keys in **kwargs:
-        old_input = kwargs.get("input")
-        user_input = kwargs.get("user_input")
-        safety_checks = kwargs.get("safety_checks")
-        pending_call = kwargs.get("pending_call")
-        if type(acknowledged_safety_checks) == str:
-            # using positional arguments in old style
-            old_input = input_text
-            user_input = acknowledged_safety_checks
-            safety_checks = ignore_safety_and_input
-            pending_call = complete_handler
-        if any([old_input, user_input, safety_checks, pending_call]) or type(acknowledged_safety_checks) == str:
-            warnings.warn(
-                "Looks like you're using the old action() command - switch to action_legacy() if you need to maintain your current code, or switch to the new action method",
-                DeprecationWarning, 
-                stacklevel=2
-            )
-            return self.action_legacy(
-                input=old_input,
-                user_input=user_input,
-                safety_checks=safety_checks,
-                pending_call=pending_call
+        self.tracer.start(str(uuid.uuid4()))
+        try:
+            # Look for old-style keys in **kwargs:
+            old_input = kwargs.get("input")
+            user_input = kwargs.get("user_input")
+            safety_checks = kwargs.get("safety_checks")
+            pending_call = kwargs.get("pending_call")
+            if type(acknowledged_safety_checks) == str:
+                # using positional arguments in old style
+                old_input = input_text
+                user_input = acknowledged_safety_checks
+                safety_checks = ignore_safety_and_input
+                pending_call = complete_handler
+            if any([old_input, user_input, safety_checks, pending_call]) or type(acknowledged_safety_checks) == str:
+                warnings.warn(
+                    "Looks like you're using the old action() command - switch to action_legacy() if you need to maintain your current code, or switch to the new action method",
+                    DeprecationWarning, 
+                    stacklevel=2
+                )
+                return self.action_legacy(
+                    input=old_input,
+                    user_input=user_input,
+                    safety_checks=safety_checks,
+                    pending_call=pending_call
+                )
+            agent = self.get_agent()
+            return agent.action(
+                input_text=input_text, 
+                acknowledged_safety_checks=acknowledged_safety_checks, 
+                ignore_safety_and_input=ignore_safety_and_input,
+                complete_handler=complete_handler,
+                needs_input_handler=needs_input_handler,
+                needs_safety_check_handler=needs_safety_check_handler,
+                error_handler=error_handler,
+                tools=tools,
+                function_map=function_map
             )
 
-        agent = self.get_agent()
-        return agent.action(
-            input_text=input_text, 
-            acknowledged_safety_checks=acknowledged_safety_checks, 
-            ignore_safety_and_input=ignore_safety_and_input,
-            complete_handler=complete_handler,
-            needs_input_handler=needs_input_handler,
-            needs_safety_check_handler=needs_safety_check_handler,
-            error_handler=error_handler,
-            tools=tools,
-            function_map=function_map
-        )
+        finally:
+            self.tracer.stop()
+    
+    # exposes context manager for a given trace 
+    def trace(self, trace_id: str):
+        return self.tracer.trace(trace_id)
 
     def extract_and_print_safety_checks(self, result):
         checks = result.get("safety_checks") or []
