@@ -22,11 +22,10 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { API_BASE_URL } from "@/config";
-
-// Declare the external currentSessionId variable from MyRuntimeProvider
-declare const currentSessionId: string | null;
+import { sessionManager } from "./MyRuntimeProvider";
+import { useSession } from "./SessionContext";
 
 export const Thread: FC = () => {
   return (
@@ -83,20 +82,33 @@ const ThreadWelcome: FC = () => {
   );
 };
 
+const ThreadWelcomeSuggestions: FC = () => {
+
+  // The host state variable is intended to be used to conditionally decide what starters are shown.
+  // If running locally, then the starters should open new windows. Otherwise (e.g., running in a Docker container), nothing should happen other than sending the prompt to the backend
+  const [host, setHost] = useState("");
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const isLocal = params.get("isLocal");
+    if (isLocal === "true") {
+      setHost("local");
+    }
+  }, []);
+
 const handleWebpageOpen = (url: string) => {
-  const browserWindow = window.open(
-    url,
-    "_blank",
-    `width=${Math.floor(window.screen.width * 0.5)},height=${window.screen.height},left=${Math.floor(window.screen.width * 0.5)}`
-  );
-  if (browserWindow) {
-    browserWindow.focus();
-  } else {
-    console.warn("Window was blocked or failed to open.");
+  if (host === "local") {
+    const browserWindow = window.open(
+      url,
+      "_blank",
+      `width=${Math.floor(window.screen.width * 0.5)},height=${window.screen.height},left=${Math.floor(window.screen.width * 0.5)}`
+    );
+    if (browserWindow) {
+      browserWindow.focus();
+    } else {
+      console.warn("Window was blocked or failed to open.");
+    }
   }
 }
-
-const ThreadWelcomeSuggestions: FC = () => {
   return (
     <div className="mt-3 flex w-full items-stretch justify-center gap-4">
       <ThreadPrimitive.Suggestion
@@ -108,7 +120,7 @@ const ThreadWelcomeSuggestions: FC = () => {
       >
         <span className="flex flex-col items-center line-clamp-2 text-ellipsis text-sm font-semibold">
           Book a dinner reservation 
-          <span className="text-xs text-muted-foreground flex flex-row items-center gap-1">Opens OpenTable.com <ExternalLink className="w-3"/></span>
+          {host === "local" && <span className="text-xs text-muted-foreground flex flex-row items-center gap-1">Opens OpenTable.com <ExternalLink className="w-3"/></span>}
         </span>
       </ThreadPrimitive.Suggestion>
       <ThreadPrimitive.Suggestion
@@ -120,7 +132,7 @@ const ThreadWelcomeSuggestions: FC = () => {
       >
         <span className="flex flex-col items-center line-clamp-2 text-ellipsis text-sm font-semibold">
           Find SFO to Tokyo flights
-          <span className="text-xs text-muted-foreground flex flex-row items-center gap-1">Opens flights.google.com <ExternalLink className="w-3"/></span>
+          {host === "local" && <span className="text-xs text-muted-foreground flex flex-row items-center gap-1">Opens flights.google.com <ExternalLink className="w-3"/></span>}
         </span>
       </ThreadPrimitive.Suggestion>
     </div>
@@ -170,33 +182,37 @@ const ComposerAction: FC<{ onSend: () => void }> = ({ onSend }) => {
 };
 
 const ComposerCancel: FC = () => {
-  // Custom cancel handler to directly call our backend
-  const handleCancel = () => {
+  // Use the session context as primary source and sessionManager as backup
+  const { sessionId: contextSessionId } = useSession();
+  
+  // Custom cancel handler with better error handling
+  const handleCancel = async () => {
     console.log('Manual cancel button clicked');
     
-    // First try to access the global variable from MyRuntimeProvider
-    // @ts-ignore - This is defined in MyRuntimeProvider.tsx
-    const sessionId = window.currentSessionId;
+    // Try to get session ID from context first, then fallback to sessionManager
+    const sessionId = contextSessionId || sessionManager.getSessionId();
     
     if (sessionId) {
-      console.log(`Sending manual cancellation for session: ${sessionId}`);
+      console.log(`Sending cancellation for session: ${sessionId}`);
       
-      // Call our cancellation endpoint directly
-      fetch(`${API_BASE_URL}/api/cancel-agent/${sessionId}`, {
-        method: 'POST',
-      })
-      .then(response => {
-        console.log('Cancel response status:', response.status);
-        return response.json();
-      })
-      .then(data => console.log('Cancel response:', data))
-      .catch(err => console.error('Error cancelling:', err));
+      try {
+        // Call our cancellation endpoint
+        const response = await fetch(`${API_BASE_URL}/api/cancel-agent/${sessionId}`, {
+          method: 'POST',
+        });
+        
+        if (response.ok) {
+          console.log('Cancellation successful');
+          const data = await response.json();
+          console.log('Cancellation response:', data);
+        } else {
+          console.error(`Cancellation failed with status: ${response.status}`);
+        }
+      } catch (err) {
+        console.error('Error cancelling:', err);
+      }
     } else {
-      console.error('No active session ID found, cancelling anyway');
-      // Try to cancel using a default session ID if needed
-      fetch(`${API_BASE_URL}/api/cancel-agent/current`, {
-        method: 'POST',
-      }).catch(err => console.error('Error in fallback cancellation:', err));
+      console.error('No active session ID found');
     }
   };
   
