@@ -1,7 +1,35 @@
+import sys
+
+try:
+    from importlib.metadata import version, PackageNotFoundError
+except ImportError:
+    from pkg_resources import get_distribution, DistributionNotFound
+    def version(pkg):
+        return get_distribution(pkg).version
+    PackageNotFoundError = DistributionNotFound
+
+from packaging.version import Version
+
+try:
+    sc_version = version("spongecake")
+    if Version(sc_version) < Version("0.1.15"):
+        print("\033[1m\033[38;5;19m" # Bold + dark blue color
+            "\n********************************************************************************\n"
+            f"  Spongecake version {sc_version} is too old. Please upgrade to >= 0.1.15.\n"
+            "  Run ./setup.sh to upgrade."
+            "\n********************************************************************************\n\033[0m")
+        sys.exit(1)
+except PackageNotFoundError:
+    print("\033[1m\033[38;5;52m"  # Bold + dark red color
+            "********************************************************************************\n"
+            "Spongecake is not installed. Please install spongecake >= 0.1.15.\n"
+            "Run ./setup.sh to install all dependencies.\n"
+            "********************************************************************************\n\033[0m")
+    sys.exit(1)
+
 import logging
 import os
 import subprocess
-import sys
 import threading
 import queue
 import time
@@ -148,11 +176,13 @@ class SpongecakeServer:
             logger.error(f"Failed to start noVNC server: {e}")
             raise
     
-    def start_container_if_needed(self, host="", logs: Optional[List[str]] = None) -> Tuple[List[str], int]:
+    def start_container_if_needed(self, host="", logs: Optional[List[str]] = None, isLocal: bool = False) -> Tuple[List[str], int]:
         """Creates a Desktop() object if we don't already have one and starts the container + noVNC server.
         
         Args:
             logs: Optional list to append log messages to
+            isLocal: Whether to start the container in local mode (if you want the agent to run locally on your computer. MacOS only supported right now)
+            host: Optional host to use for the container
             
         Returns:
             Tuple containing logs and the noVNC port
@@ -162,7 +192,7 @@ class SpongecakeServer:
         
         try:
             # 1) Start the Spongecake Desktop container
-            self.desktop = Desktop(name=Config.CONTAINER_NAME, host=host if host != '' else None)
+            self.desktop = Desktop(name=Config.CONTAINER_NAME, host=host if host != '' else None, isLocal = isLocal)
             container = self.desktop.start()
             logs.append(f"🍰 Container started: {container}")
             logger.info(f"🍰 Container started: {container}")
@@ -205,14 +235,14 @@ class SpongecakeServer:
         for msg in data.output:
             if hasattr(msg, "content"):
                 text_parts = [part.text for part in msg.content if hasattr(part, "text")]
-                self.result[0] = text_parts
+                self.result[0] = [{"pendingSafetyCheck": False, "messages": text_parts}] 
         
     def needs_input_handler(self, messages):
         """NEEDS_INPUT -- Get input from the user, and pass it back to `action`"""
         for msg in messages:
             if hasattr(msg, "content"):
                 text_parts = [part.text for part in msg.content if hasattr(part, "text")]
-                self.result[0] = text_parts
+                self.result[0] = [{"pendingSafetyCheck": False, "messages": text_parts}] 
 
     def needs_safety_check_handler(self, safety_checks, pending_call):
         # Check if the user has already acknowledged safety checks (set this flag in run_agent_action)
@@ -230,7 +260,7 @@ class SpongecakeServer:
     def error_handler(self, error_message):
         """ERROR -- Handle errors (just print it out in this case)"""
         print(f"😱 ERROR: {error_message}")
-        self.result[0] = None  # Just return None on error
+        self.result[0] = [{"pendingSafetyCheck": False, "messages": None}] # Just return None on error
 
     def run_agent_action(self, user_prompt: str, auto_mode: bool = False, safety_ack: bool = False, log_queue=None, stop_event=None) -> Dict[str, Any]:
         """Run the agent logic in the Spongecake Desktop (while showing the custom cursor overlay if running locally)
@@ -260,7 +290,7 @@ class SpongecakeServer:
         try:
             # Create a wrapper for desktop.action that checks the stop_event
             def run_with_cancellation_check():
-                context = launch_cursor_overlay() if self.desktop.host == 'local' else DockerContext()
+                context = launch_cursor_overlay() if self.desktop.host == 'local' or self.desktop.isLocal and self.desktop.isLocal == True else DockerContext()
                 with context:
                     # Run the agent action
                     if auto_mode:
@@ -296,20 +326,10 @@ class SpongecakeServer:
         logs.append(log_msg)
         agent_response = self.result[0]
 
-        if (isinstance(agent_response, list) and agent_response and 
-            isinstance(agent_response[0], dict) and agent_response[0].get("pendingSafetyCheck")):
-            return {
-                "logs": logs,
-                "agent_response": json.dumps({
-                    'pendingSafetyCheck': True,
-                    'messages': ["We've spotted something that might cause the agent to behave unexpectedly! Please acknowledge this to proceed.\n\n > *Type 'ack' to acknowledge and proceed.*"]
-                })
-            }
-        else:
-            return {
-                "logs": logs,
-                "agent_response": agent_response[0]
-            }
+        return {
+            "logs": logs,
+            "agent_response": agent_response
+        }
 
 
     def api_start_container(self):
@@ -320,7 +340,8 @@ class SpongecakeServer:
         """
         data = request.get_json()
         host = data.get("host", "")
-        logs, port = self.start_container_if_needed(host)
+        isLocal = data.get("isLocal", False)
+        logs, port = self.start_container_if_needed(host = host, isLocal = isLocal)
         return jsonify({
             "logs": logs,
             "novncPort": port
