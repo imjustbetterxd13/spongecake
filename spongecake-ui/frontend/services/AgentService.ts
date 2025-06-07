@@ -27,7 +27,7 @@ export interface AgentResponse {
 export class AgentService {
   /**
    * Sends a request to run the agent with the given messages
-   * 
+   *
    * @param options - The request options
    * @returns A promise that resolves to the agent response
    */
@@ -43,18 +43,18 @@ export class AgentService {
         }),
         signal: options.abortSignal
       });
-      
+
       if (!response.ok) {
         throw new Error(`Server error: ${response.status}`);
       }
-      
+
       return await response.json();
     } catch (error: any) {
       // Rethrow AbortError to be handled by the caller
       if (error.name === "AbortError") {
         throw error;
       }
-      
+
       // Handle other errors
       console.error("Error running agent:", error);
       return {
